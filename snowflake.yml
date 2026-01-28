@@ -1,0 +1,14 @@
+definition_version: 2
+entities:
+  fdb_correctness_watcher:
+    type: streamlit
+    identifier:
+      name: FDB_CORRECTNESS_WATCHER
+      database: SNOWPUBLIC
+      schema: STREAMLIT
+    query_warehouse: ANALYST_WH
+    main_file: app.py
+    artifacts:
+      - app.py
+      - jira_client.py
+      - requirements.txt

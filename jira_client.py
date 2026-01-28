@@ -2,16 +2,28 @@ import os
 import requests
 from datetime import datetime
 from typing import Optional
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+def get_secret(key: str, default: str = "") -> str:
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+    except:
+        pass
+    return os.getenv(key, default)
 
 class JiraClient:
     def __init__(self):
-        self.base_url = os.getenv("JIRA_BASE_URL")
-        self.email = os.getenv("JIRA_EMAIL")
-        self.api_token = os.getenv("JIRA_API_TOKEN")
-        self.project_key = os.getenv("JIRA_PROJECT_KEY", "FDBCORE")
+        self.base_url = get_secret("JIRA_BASE_URL")
+        self.email = get_secret("JIRA_EMAIL")
+        self.api_token = get_secret("JIRA_API_TOKEN")
+        self.project_key = get_secret("JIRA_PROJECT_KEY", "FDBCORE")
         
     @property
     def auth(self):

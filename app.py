@@ -2,20 +2,43 @@ import streamlit as st
 import pandas as pd
 import requests
 import os
-from jira_client import JiraClient
+import json
+from jira_client import JiraClient, get_secret
 from datetime import datetime, timedelta
-from dotenv import load_dotenv, set_key
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv, set_key
+    load_dotenv()
+    HAS_DOTENV = True
+except ImportError:
+    HAS_DOTENV = False
 
-ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
+ENV_FILE = os.path.join(os.path.dirname(__file__), ".env") if HAS_DOTENV else None
+WEBHOOKS_FILE = os.path.join(os.path.dirname(__file__), "webhooks.json")
 
-def get_slack_webhook():
-    return os.getenv("SLACK_WEBHOOK_URL", "")
+def load_webhooks() -> dict:
+    if os.path.exists(WEBHOOKS_FILE):
+        try:
+            with open(WEBHOOKS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
 
-def save_slack_webhook(url: str):
-    set_key(ENV_FILE, "SLACK_WEBHOOK_URL", url)
-    os.environ["SLACK_WEBHOOK_URL"] = url
+def save_webhooks(webhooks: dict):
+    with open(WEBHOOKS_FILE, "w") as f:
+        json.dump(webhooks, f, indent=2)
+
+def add_webhook(name: str, url: str):
+    webhooks = load_webhooks()
+    webhooks[name] = url
+    save_webhooks(webhooks)
+
+def delete_webhook(name: str):
+    webhooks = load_webhooks()
+    if name in webhooks:
+        del webhooks[name]
+        save_webhooks(webhooks)
 
 st.set_page_config(page_title="FDB Correctness Watcher", page_icon=":material/radar:", layout="wide")
 
@@ -42,7 +65,7 @@ DEFAULT_VIEW = "-- Select a View --"
 
 DEFAULT_SLA_DAYS = 14
 
-def generate_slack_message(df: pd.DataFrame, sla_days: int, exclude_under_sla: bool = False) -> str:
+def generate_slack_message(df: pd.DataFrame, sla_days: int, exclude_under_sla: bool = False, totals: dict = None) -> str:
     lines = []
     lines.append("*📊 FDB Correctness SLA Report*")
     lines.append("")
@@ -50,7 +73,7 @@ def generate_slack_message(df: pd.DataFrame, sla_days: int, exclude_under_sla: b
     lines.append("*Legend:*")
     lines.append("• 🟢 Under SLA (within limit)")
     lines.append(f"• 🟡 Warning (>{int(sla_days * 0.8)}d of {sla_days}d SLA)")
-    lines.append("• 🔴 Breached (over SLA)")
+    lines.append("• 🔴 Breached (> 14 days, over SLA)")
     lines.append("")
     
     total = len(df)
@@ -60,10 +83,16 @@ def generate_slack_message(df: pd.DataFrame, sla_days: int, exclude_under_sla: b
     under_sla = total - over_sla - warning_count
     
     lines.append("*Summary:*")
-    lines.append(f"• Total Tickets: {total}")
-    lines.append(f"• 🔴 SLA Breached: {over_sla}")
-    lines.append(f"• 🟡 SLA Warning (>{int(warning_threshold)}d): {warning_count}")
-    lines.append(f"• 🟢 SLA OK: {under_sla}")
+    if totals and totals.get("total") != total:
+        lines.append(f"• Total Tickets: {total} (of {totals['total']})")
+        lines.append(f"• 🔴 SLA Breached: {over_sla} (of {totals['over_sla']})")
+        lines.append(f"• 🟡 SLA Warning (>{int(warning_threshold)}d): {warning_count}")
+        lines.append(f"• 🟢 SLA OK: {under_sla} (of {totals['under_sla']})")
+    else:
+        lines.append(f"• Total Tickets: {total}")
+        lines.append(f"• 🔴 SLA Breached: {over_sla}")
+        lines.append(f"• 🟡 SLA Warning (>{int(warning_threshold)}d): {warning_count}")
+        lines.append(f"• 🟢 SLA OK: {under_sla}")
     lines.append("")
     
     work_df = df.copy()
@@ -172,20 +201,29 @@ def main():
         
         st.divider()
         
-        st.subheader(":material/webhook: Slack Integration")
-        saved_webhook = get_slack_webhook()
-        webhook_url = st.text_input(
-            "Webhook URL",
-            value=saved_webhook,
-            type="password",
-            placeholder="https://hooks.slack.com/services/...",
-            help="Get a webhook URL from your Slack workspace settings"
-        )
-        if webhook_url != saved_webhook:
-            if st.button(":material/save: Save Webhook", use_container_width=True):
-                save_slack_webhook(webhook_url)
-                st.success("Webhook saved!")
-                st.rerun()
+        st.subheader(":material/webhook: Slack Webhooks")
+        webhooks = load_webhooks()
+        
+        if webhooks:
+            st.caption(f"{len(webhooks)} webhook(s) configured")
+            for name in list(webhooks.keys()):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.text(f"• {name}")
+                with col2:
+                    if st.button("🗑️", key=f"del_{name}", help=f"Delete {name}"):
+                        delete_webhook(name)
+                        st.rerun()
+        
+        with st.expander("Add Webhook", expanded=len(webhooks) == 0):
+            with st.form("add_webhook_form", clear_on_submit=True):
+                new_name = st.text_input("Name", placeholder="e.g., #fdb-alerts")
+                new_url = st.text_input("URL", placeholder="https://hooks.slack.com/services/...", type="password")
+                if st.form_submit_button(":material/add: Add Webhook", use_container_width=True):
+                    if new_name and new_url:
+                        add_webhook(new_name, new_url)
+                        st.success(f"Added '{new_name}'")
+                        st.rerun()
         
         st.divider()
         
@@ -222,18 +260,23 @@ def main():
         default_statuses = [s for s in ["To Do", "Triaged", "IN PROGRESS"] if s in statuses]
         selected_statuses = st.multiselect("Status", statuses, default=default_statuses)
     
-    if selected_area != "All":
-        df = df[df["area"] == selected_area]
-    
     if selected_statuses:
         df = df[df["status"].isin(selected_statuses)]
+    
+    total_all = len(df)
+    total_under_sla_all = len(df[df["sla_status"] == "under"])
+    total_over_sla_all = len(df[df["sla_status"] == "over"])
+    
+    if selected_area != "All":
+        df = df[df["area"] == selected_area]
     
     status_counts = df["status"].value_counts().to_dict()
     sla_violations = len(df[df["sla_status"] == "over"])
     
     col1, col2, col3 = st.columns([1, 3, 1])
     with col1:
-        st.metric("Total Issues", len(df))
+        label = f"{len(df)} (of {total_all})" if selected_area != "All" else str(len(df))
+        st.metric("Total Issues", label)
     with col2:
         if len(status_counts) > 0:
             status_cols = st.columns(len(status_counts))
@@ -260,9 +303,11 @@ def main():
         
         sla_col1, sla_col2 = st.columns(2)
         with sla_col1:
-            st.metric("🟢 Under SLA", under_sla_count)
+            label = f"{under_sla_count} (of {total_under_sla_all})" if selected_area != "All" else str(under_sla_count)
+            st.metric("🟢 Under SLA", label)
         with sla_col2:
-            st.metric("🔴 Over SLA", over_sla_count)
+            label = f"{over_sla_count} (of {total_over_sla_all})" if selected_area != "All" else str(over_sla_count)
+            st.metric("🔴 Over SLA", label)
         
         st.markdown("##### 📊 Participant Statistics")
         participant_stats = df.groupby("assignee").agg(
@@ -319,31 +364,34 @@ def main():
     
     with st.expander(":material/share: **Generate Slack Message**", expanded=False):
         exclude_under_sla = st.checkbox("Exclude JIRAs under SLA (show only violations)", value=False)
-        slack_msg = generate_slack_message(df, sla_days, exclude_under_sla)
+        totals = {"total": total_all, "under_sla": total_under_sla_all, "over_sla": total_over_sla_all}
+        is_filtered = len(df) != total_all
+        slack_msg = generate_slack_message(df, sla_days, exclude_under_sla, totals if is_filtered else None)
         
-        saved_webhook = get_slack_webhook()
-        if saved_webhook:
-            col1, col2 = st.columns([1, 3])
+        webhooks = load_webhooks()
+        if webhooks:
+            webhook_names = list(webhooks.keys())
+            col1, col2 = st.columns([2, 1])
             with col1:
-                send_btn = st.button(":material/send: Send to Slack", type="primary")
+                selected_webhook = st.selectbox("Send to", webhook_names, key="webhook_select")
             with col2:
-                st.caption("Webhook configured ✓")
+                send_btn = st.button(":material/send: Send", type="primary", use_container_width=True)
             
-            if send_btn:
+            if send_btn and selected_webhook:
                 try:
                     response = requests.post(
-                        saved_webhook,
+                        webhooks[selected_webhook],
                         json={"text": slack_msg, "mrkdwn": True},
                         headers={"Content-Type": "application/json"}
                     )
                     if response.status_code == 200:
-                        st.success("✅ Message sent to Slack!")
+                        st.success(f"✅ Sent to {selected_webhook}!")
                     else:
                         st.error(f"Failed to send: {response.text}")
                 except Exception as e:
                     st.error(f"Error: {e}")
         else:
-            st.warning("Configure Slack webhook in the sidebar to enable sending.")
+            st.warning("Configure Slack webhook(s) in the sidebar to enable sending.")
         
         st.divider()
         st.subheader("Preview")
