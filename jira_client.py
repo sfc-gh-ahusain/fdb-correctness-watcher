@@ -9,13 +9,16 @@ try:
 except ImportError:
     pass
 
+JIRA_CONFIG = {
+    "JIRA_BASE_URL": "https://snowflakecomputing.atlassian.net",
+    "JIRA_EMAIL": os.getenv("JIRA_EMAIL", ""),
+    "JIRA_API_TOKEN": os.getenv("JIRA_API_TOKEN", ""),
+    "JIRA_PROJECT_KEY": "FDBCORE"
+}
+
 def get_secret(key: str, default: str = "") -> str:
-    try:
-        import streamlit as st
-        if hasattr(st, 'secrets') and key in st.secrets:
-            return st.secrets[key]
-    except:
-        pass
+    if key in JIRA_CONFIG:
+        return JIRA_CONFIG[key]
     return os.getenv(key, default)
 
 class JiraClient:
@@ -45,7 +48,7 @@ class JiraClient:
             payload = {
                 "jql": jql,
                 "maxResults": max_results,
-                "fields": ["summary", "status", "priority", "assignee", "created", "updated", "issuetype", "labels", "customfield_11401"]
+                "fields": ["key", "summary", "status", "priority", "assignee", "created", "updated", "issuetype", "labels", "customfield_11401", "issuelinks"]
             }
             if next_page_token:
                 payload["nextPageToken"] = next_page_token
@@ -91,6 +94,13 @@ class JiraClient:
             area_field = fields.get("customfield_11401")
             area = area_field.get("value", "Unassigned") if area_field else "Unassigned"
             
+            issuelinks = fields.get("issuelinks", [])
+            duplicate_count = 0
+            for link in issuelinks:
+                link_type = link.get("type", {}).get("name", "").lower()
+                if "duplicate" in link_type:
+                    duplicate_count += 1
+            
             parsed.append({
                 "key": issue.get("key"),
                 "summary": fields.get("summary", ""),
@@ -103,7 +113,8 @@ class JiraClient:
                 "days_since_update": days_since_update,
                 "labels": fields.get("labels", []),
                 "area": area,
-                "url": f"{self.base_url}/browse/{issue.get('key')}"
+                "url": f"{self.base_url}/browse/{issue.get('key')}",
+                "duplicate_count": duplicate_count
             })
         return parsed
     
