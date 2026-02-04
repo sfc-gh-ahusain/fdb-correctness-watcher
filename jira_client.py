@@ -125,3 +125,24 @@ class JiraClient:
             jql = f'project = {self.project_key} AND status in ("To Do", "In Progress") ORDER BY priority DESC, created DESC'
         issues = self.fetch_issues(jql=jql)
         return self.parse_issues(issues)
+    
+    def add_comment(self, issue_key: str, comment_body: str) -> dict:
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+        payload = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {"type": "text", "text": comment_body}
+                        ]
+                    }
+                ]
+            }
+        }
+        response = requests.post(url, headers=self.headers, auth=self.auth, json=payload)
+        if response.status_code not in (200, 201):
+            raise Exception(f"Failed to add comment: {response.status_code} - {response.text}")
+        return response.json()

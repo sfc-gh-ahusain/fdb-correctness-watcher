@@ -568,11 +568,11 @@ def render_participant_detail(df: pd.DataFrame, participant: str, duplicate_thre
     
     if len(under_sla_df) > 0:
         st.markdown("#### 🟢 Under SLA")
-        display_issues_table(under_sla_df, duplicate_threshold)
+        display_issues_table(under_sla_df, duplicate_threshold, f"participant_{participant}_under")
     
     if len(over_sla_df) > 0:
         st.markdown("#### 🔴 Over SLA")
-        display_issues_table(over_sla_df, duplicate_threshold)
+        display_issues_table(over_sla_df, duplicate_threshold, f"participant_{participant}_over")
 
 def render_sla_report(df: pd.DataFrame, duplicate_threshold: int = DEFAULT_DUPLICATE_THRESHOLD):
     st.subheader("SLA Report")
@@ -591,7 +591,7 @@ def render_sla_report(df: pd.DataFrame, duplicate_threshold: int = DEFAULT_DUPLI
         st.markdown("### 🟢 Under SLA")
         under_sla = critical_high_df[critical_high_df["sla_status"] == "under"]
         if len(under_sla) > 0:
-            display_issues_table(under_sla, duplicate_threshold)
+            display_issues_table(under_sla, duplicate_threshold, "sla_report_under")
         else:
             st.info("No issues under SLA")
     
@@ -599,11 +599,11 @@ def render_sla_report(df: pd.DataFrame, duplicate_threshold: int = DEFAULT_DUPLI
         st.markdown("### 🔴 Over SLA (Violations)")
         over_sla = critical_high_df[critical_high_df["sla_status"] == "over"]
         if len(over_sla) > 0:
-            display_issues_table(over_sla, duplicate_threshold)
+            display_issues_table(over_sla, duplicate_threshold, "sla_report_over")
         else:
             st.success("No SLA violations!")
 
-def display_issues_table(df: pd.DataFrame, duplicate_threshold: int = DEFAULT_DUPLICATE_THRESHOLD):
+def display_issues_table(df: pd.DataFrame, duplicate_threshold: int = DEFAULT_DUPLICATE_THRESHOLD, table_key: str = "default"):
     display_df = df[["key", "summary", "priority", "status", "assignee", "days_open", "sla_limit", "duplicate_count"]].copy().reset_index(drop=True)
     display_df["remaining"] = display_df.apply(lambda row: row["sla_limit"] - row["days_open"] if row["sla_limit"] else None, axis=1)
     display_df["dup_display"] = display_df["duplicate_count"].apply(lambda x: f"📢 {x}" if x > duplicate_threshold else str(x))
@@ -634,6 +634,22 @@ def display_issues_table(df: pd.DataFrame, duplicate_threshold: int = DEFAULT_DU
         hide_index=True,
         use_container_width=True
     )
+    
+    ticket_keys = display_df["key"].tolist()
+    if ticket_keys:
+        with st.popover(":material/add_comment: Add Comment", use_container_width=False):
+            selected_ticket = st.selectbox("Ticket", ticket_keys, key=f"comment_ticket_{table_key}")
+            comment_text = st.text_area("Comment", placeholder="Enter your comment...", key=f"comment_text_{table_key}")
+            if st.button(":material/send: Submit", key=f"comment_submit_{table_key}", type="primary"):
+                if comment_text.strip():
+                    try:
+                        client = JiraClient()
+                        client.add_comment(selected_ticket, comment_text)
+                        st.success(f"Comment added to {selected_ticket}")
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+                else:
+                    st.warning("Please enter a comment")
 
 if __name__ == "__main__":
     main()
